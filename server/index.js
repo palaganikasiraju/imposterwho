@@ -75,4 +75,4 @@ io.on('connection', (socket) => {
 });
 
 const port = process.env.PORT || 3001;
-httpServer.listen(port, () => console.log(`Imposter Who server running on http://localhost:${port}`));
+httpServer.listen(port, '0.0.0.0', () => console.log(`Imposter Who server running on port ${port}`));

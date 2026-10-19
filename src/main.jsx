@@ -91,6 +91,22 @@ function App() {
     return () => { socket.off('connect', connected); socket.off('room:update', roomUpdated); socket.off('game:role', roleReceived); socket.off('game:state', gameState); socket.off('game:voting', votingStarted); socket.off('game:results', resultsReceived); socket.off('webrtc:offer', offerReceived); socket.off('webrtc:answer', answerReceived); socket.off('webrtc:ice', iceReceived); };
   }, [name, players]);
 
+  useEffect(() => {
+    if (!micOn || !localStreamRef.current || !myId) return;
+    players.filter((player) => player.id && player.id !== myId).forEach((player) => {
+      let peer = peersRef.current.get(player.id);
+      if (!peer) {
+        peer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+        peer.onicecandidate = ({ candidate }) => { if (candidate) socket.emit('webrtc:ice', { targetId: player.id, candidate }); };
+        peer.ontrack = ({ streams }) => { if (streams[0]) setRemoteStreams((current) => ({ ...current, [player.id]: streams[0] })); };
+        peersRef.current.set(player.id, peer);
+      }
+      const senders = peer.getSenders();
+      localStreamRef.current.getTracks().forEach((track) => { if (!senders.some((sender) => sender.track?.id === track.id)) peer.addTrack(track, localStreamRef.current); });
+      if (myId < player.id && peer.signalingState === 'stable') peer.createOffer().then((offer) => peer.setLocalDescription(offer)).then(() => socket.emit('webrtc:offer', { targetId: player.id, offer: peer.localDescription }));
+    });
+  }, [micOn, myId, players]);
+
   function startRoom(join = false) {
     if (!name.trim()) return setNotice('Enter your name first');
     if (join && roomCode.trim().length < 4) return setNotice('Enter a valid 4-digit room code');
@@ -119,17 +135,6 @@ function App() {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
         localStreamRef.current = stream;
         setMicOn(true);
-        players.filter((player) => player.id && player.id !== socket.id).forEach((player) => {
-          const initiator = socket.id < player.id;
-          if (initiator) {
-            const peer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-            stream.getTracks().forEach((track) => peer.addTrack(track, stream));
-            peer.onicecandidate = ({ candidate }) => { if (candidate) socket.emit('webrtc:ice', { targetId: player.id, candidate }); };
-            peer.ontrack = ({ streams }) => { if (streams[0]) setRemoteStreams((current) => ({ ...current, [player.id]: streams[0] })); };
-            peersRef.current.set(player.id, peer);
-            peer.createOffer().then((offer) => peer.setLocalDescription(offer)).then(() => socket.emit('webrtc:offer', { targetId: player.id, offer: peer.localDescription }));
-          }
-        });
       } catch {
         setNotice('Microphone permission was not granted');
       }
@@ -163,7 +168,7 @@ function App() {
     <div className="avatar-row">{players.map((player, index) => <div className="avatar-wrap" key={player.name}><div className={`avatar hue-${index}`}>{player.name[0]}</div><span>{player.name}</span></div>)}</div>
     <div className="call-actions"><button className={micOn ? 'icon-button active' : 'icon-button'} onClick={toggleMic}>{micOn ? <Mic size={17} /> : <MicOff size={17} />}</button><span>{micOn ? 'Mic on' : 'Join audio'}</span><button className="icon-button"><Volume2 size={17} /></button></div>
     <div className="remote-audio">{Object.entries(remoteStreams).map(([peerId, stream]) => <audio key={peerId} autoPlay ref={(element) => { if (element) element.srcObject = stream; }} />)}</div>
-    <p className="call-note"><Headphones size={14} /> Talk freely while the current player gives a clue.</p>
+    <p className="call-note"><Headphones size={14} /> {micOn ? (Object.keys(remoteStreams).length ? `Audio connected with ${Object.keys(remoteStreams).length} player(s).` : 'Mic is on. Waiting for another player to join audio.') : 'Tap Join audio and allow microphone access.'}</p>
   </aside>;
 
   const steps = [{ id: 'lobby', label: 'Join' }, { id: 'role', label: 'Secret' }, { id: 'turn', label: 'Clues' }, { id: 'voting', label: 'Vote' }, { id: 'results', label: 'Result' }];

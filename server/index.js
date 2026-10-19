@@ -52,9 +52,9 @@ io.on('connection', (socket) => {
     if (!room || room.hostId !== socket.id || room.players.size < 3) return done?.({ ok: false, error: 'At least 3 players are needed' });
     room.status = 'playing'; room.game = { ...settings, turn: 0, players: [...room.players.values()].map((p) => p.id) };
     const ids = room.game.players; const imposterId = ids[Math.floor(Math.random() * ids.length)];
-    room.game.imposterId = imposterId; room.game.word = settings.word;
+    room.game.imposterId = imposterId; room.game.word = settings.word; room.game.question = settings.question; room.game.votes = new Map();
     ids.forEach((id) => io.to(id).emit('game:role', { role: id === imposterId ? 'imposter' : 'player', word: id === imposterId ? null : settings.word }));
-    io.to(roomCode).emit('game:state', { status: 'playing', turn: 0, currentPlayerId: ids[0] }); sendRoom(roomCode); done?.({ ok: true });
+    io.to(roomCode).emit('game:state', { status: 'playing', turn: 0, currentPlayerId: ids[0], question: room.game.question }); sendRoom(roomCode); done?.({ ok: true });
   });
 
   socket.on('game:next', ({ roomCode }, done) => {
@@ -65,7 +65,16 @@ io.on('connection', (socket) => {
     done?.({ ok: true });
   });
 
-  socket.on('vote:submit', ({ roomCode, targetId }) => io.to(roomCode).emit('vote:update', { voterId: socket.id, targetId }));
+  socket.on('vote:submit', ({ roomCode, targetId }) => {
+    const room = rooms.get(roomCode); if (!room?.game) return;
+    room.game.votes.set(socket.id, targetId);
+    io.to(roomCode).emit('vote:update', { voterId: socket.id, targetId });
+    if (room.game.votes.size >= room.game.players.length) {
+      const counts = {}; for (const target of room.game.votes.values()) counts[target] = (counts[target] || 0) + 1;
+      const topTarget = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0];
+      io.to(roomCode).emit('game:results', { imposterId: room.game.imposterId, word: room.game.word, caught: topTarget === room.game.imposterId, votes: Object.fromEntries(room.game.votes) });
+    }
+  });
 
   socket.on('webrtc:offer', ({ targetId, offer }) => io.to(targetId).emit('webrtc:offer', { fromId: socket.id, offer }));
   socket.on('webrtc:answer', ({ targetId, answer }) => io.to(targetId).emit('webrtc:answer', { fromId: socket.id, answer }));

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { io } from 'socket.io-client';
 import { Headphones, Mic, MicOff, Copy, Users, Sparkles, ArrowRight, RotateCcw, Crown, ShieldCheck, Volume2 } from 'lucide-react';
 import './styles.css';
 
@@ -14,6 +15,8 @@ const names = ['Maya', 'Arjun', 'Priya', 'Sam'];
 const funnySubjects = ['a sleepy penguin', 'grandpa’s dancing shoes', 'a talking potato', 'your family group chat', 'a confused superhero', 'a dramatic cat', 'a robot at dinner', 'a chicken with a secret', 'a very honest parrot', 'a banana in sunglasses'];
 const funnySituations = ['tries to win a talent show', 'gets stuck in an elevator', 'orders food at midnight', 'becomes the family boss', 'forgets everyone’s name', 'starts a cooking channel', 'goes on a first date', 'has to give a speech', 'joins a dance battle', 'tries to act mysterious', 'loses the remote control', 'opens a tiny shop', 'gets invited to a wedding', 'becomes a school teacher', 'tries to tell a joke', 'finds a magic button', 'goes camping for the first time', 'gets a surprise birthday party', 'becomes a detective', 'tries to hide a giant surprise', 'has to babysit ten puppies', 'gets locked inside a supermarket', 'starts a rock band', 'takes a selfie for the first time', 'tries to catch a flying sandwich', 'is late for an important meeting', 'wins a very strange trophy', 'tries to impress the neighbours', 'gets interviewed on TV', 'becomes famous for one day'];
 const QUESTIONS = funnySubjects.flatMap((subject) => funnySituations.map((situation) => `What would ${subject} do when it ${situation}?`));
+const SOCKET_URL = import.meta.env.DEV ? 'http://localhost:3001' : window.location.origin;
+const socket = io(SOCKET_URL, { autoConnect: true });
 
 function makeRoom() {
   return String(Math.floor(1000 + Math.random() * 9000));
@@ -37,6 +40,7 @@ function App() {
   const [copied, setCopied] = useState(false);
   const [scores, setScores] = useState({});
   const [notice, setNotice] = useState('');
+  const [myId, setMyId] = useState('');
 
   const currentPlayer = players[turn];
   const isMyTurn = currentPlayer?.name === name;
@@ -52,13 +56,28 @@ function App() {
     return () => clearTimeout(timer);
   }, [notice]);
 
+  useEffect(() => {
+    const connected = () => setMyId(socket.id);
+    const roomUpdated = (room) => { setRoomCode(room.code); setPlayers(room.players); };
+    const roleReceived = ({ role, word: receivedWord }) => { setRoles((current) => ({ ...current, [name]: role })); setWord(receivedWord || ''); setScreen('role'); };
+    const gameState = ({ currentPlayerId, question: serverQuestion }) => { if (serverQuestion) setQuestion(serverQuestion); setTurn((current) => { const next = players.findIndex((player) => player.id === currentPlayerId); return next < 0 ? current : next; }); };
+    const votingStarted = () => setScreen('voting');
+    const resultsReceived = ({ imposterId, word: resultWord, caught, votes: serverVotes }) => {
+      const imposterPlayer = players.find((player) => player.id === imposterId);
+      if (imposterPlayer) setRoles((current) => ({ ...current, [imposterPlayer.name]: 'imposter' }));
+      setWord(resultWord); setVotes(Object.fromEntries(Object.entries(serverVotes || {}).map(([voterId, targetId]) => [players.find((p) => p.id === voterId)?.name || voterId, players.find((p) => p.id === targetId)?.name || targetId]))); setScreen('results');
+      setNotice(caught ? 'The family caught the imposter!' : 'The imposter escaped!');
+    };
+    socket.on('connect', connected); socket.on('room:update', roomUpdated); socket.on('game:role', roleReceived); socket.on('game:state', gameState); socket.on('game:voting', votingStarted); socket.on('game:results', resultsReceived);
+    return () => { socket.off('connect', connected); socket.off('room:update', roomUpdated); socket.off('game:role', roleReceived); socket.off('game:state', gameState); socket.off('game:voting', votingStarted); socket.off('game:results', resultsReceived); };
+  }, [name, players]);
+
   function startRoom(join = false) {
     if (!name.trim()) return setNotice('Enter your name first');
-    const code = join ? roomCode.trim() : makeRoom();
-    if (!code || code.length < 4) return setNotice('Enter a valid 4-digit room code');
-    setRoomCode(code);
-    setPlayers([{ name: name.trim(), isHost: !join }, ...(join ? [] : names.slice(0, 2).map((n) => ({ name: n, isHost: false }))) ]);
-    setScreen('lobby');
+    if (join && roomCode.trim().length < 4) return setNotice('Enter a valid 4-digit room code');
+    const event = join ? 'room:join' : 'room:create';
+    const payload = join ? { code: roomCode.trim(), name: name.trim() } : { name: name.trim() };
+    socket.emit(event, payload, (response) => { if (!response?.ok) return setNotice(response?.error || 'Could not enter room'); setScreen('lobby'); });
   }
 
   function copyRoom() {
@@ -69,15 +88,9 @@ function App() {
 
   function beginGame() {
     const chosenWord = WORDS[category][Math.floor(Math.random() * WORDS[category].length)];
-    const imposterIndex = Math.floor(Math.random() * players.length);
-    const nextRoles = Object.fromEntries(players.map((player, index) => [player.name, index === imposterIndex ? 'imposter' : 'player']));
-    setRoles(nextRoles);
-    setWord(chosenWord);
     setQuestion(QUESTIONS[Math.floor(Math.random() * QUESTIONS.length)]);
-    setTurn(0);
-    setVotes({});
-    setMyVote('');
-    setScreen('role');
+    if (players.length < 3) return setNotice('Add at least 3 family members before starting');
+    socket.emit('game:start', { roomCode, settings: { category, rounds, word: chosenWord, question } }, (response) => { if (!response?.ok) setNotice(response?.error || 'Only the host can start'); });
   }
 
   async function toggleMic() {
@@ -93,16 +106,14 @@ function App() {
 
   function finishTurn() {
     if (!isMyTurn) return setNotice(`It is ${currentPlayer.name}'s turn`);
-    if (turn < players.length - 1) {
-      setTurn(turn + 1);
-      setScreen('turn');
-    } else setScreen('voting');
+    socket.emit('game:next', { roomCode }, (response) => { if (!response?.ok) setNotice(response?.error || 'Please wait for your turn'); });
   }
 
   function submitVote() {
     if (!myVote) return setNotice('Choose a player to vote for');
-    setVotes({ ...votes, [name]: myVote });
-    setScreen('results');
+    const target = players.find((player) => player.name === myVote);
+    socket.emit('vote:submit', { roomCode, targetId: target?.id });
+    setNotice('Vote sent. Waiting for the family...');
   }
 
   function nextRound() {

@@ -52,9 +52,9 @@ io.on('connection', (socket) => {
     if (!room || room.hostId !== socket.id || room.players.size < 2) return done?.({ ok: false, error: `At least 2 players are needed. Live players: ${room?.players.size || 0}` });
     room.status = 'playing'; room.game = { ...settings, turn: 0, players: [...room.players.values()].map((p) => p.id) };
     const ids = room.game.players; const imposterId = ids[Math.floor(Math.random() * ids.length)];
-    room.game.imposterId = imposterId; room.game.word = settings.word; room.game.question = settings.question; room.game.votes = new Map();
+    room.game.imposterId = imposterId; room.game.word = settings.word; room.game.question = settings.question; room.game.votes = new Map(); room.game.turn = Math.floor(Math.random() * ids.length);
     ids.forEach((id) => io.to(id).emit('game:role', { role: id === imposterId ? 'imposter' : 'player', word: id === imposterId ? null : settings.word }));
-    io.to(roomCode).emit('game:state', { status: 'playing', turn: 0, currentPlayerId: ids[0], question: room.game.question }); sendRoom(roomCode); done?.({ ok: true });
+    io.to(roomCode).emit('game:state', { status: 'playing', turn: room.game.turn, currentPlayerId: ids[room.game.turn], question: room.game.question }); sendRoom(roomCode); done?.({ ok: true });
   });
 
   socket.on('game:next', ({ roomCode }, done) => {

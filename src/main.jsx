@@ -43,6 +43,7 @@ function App() {
   const [scores, setScores] = useState({});
   const [notice, setNotice] = useState('');
   const [myId, setMyId] = useState('');
+  const [playerToken] = useState(() => localStorage.getItem('imposter-player-token') || (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`));
   const localStreamRef = useRef(null);
   const peersRef = useRef(new Map());
   const [remoteStreams, setRemoteStreams] = useState({});
@@ -56,15 +57,22 @@ function App() {
   }, [votes]);
 
   useEffect(() => {
+    localStorage.setItem('imposter-player-token', playerToken);
+    const savedName = localStorage.getItem('imposter-player-name');
+    const savedRoom = localStorage.getItem('imposter-room-code');
+    if (savedName && savedRoom) { setName(savedName); setRoomCode(savedRoom); }
+  }, [playerToken]);
+
+  useEffect(() => {
     if (!notice) return;
     const timer = setTimeout(() => setNotice(''), 2200);
     return () => clearTimeout(timer);
   }, [notice]);
 
   useEffect(() => {
-    const connected = () => setMyId(socket.id);
-    const roomUpdated = (room) => { setRoomCode(room.code); setPlayers(room.players); };
-    const roleReceived = ({ role, word: receivedWord }) => { setRoles((current) => ({ ...current, [name]: role })); setWord(receivedWord || ''); setScreen('role'); };
+    const connected = () => { setMyId(socket.id); const savedName = localStorage.getItem('imposter-player-name'); const savedRoom = localStorage.getItem('imposter-room-code'); if (savedName && savedRoom) socket.emit('room:join', { code: savedRoom, name: savedName, token: playerToken }, (response) => { if (response?.ok) setScreen('lobby'); }); };
+    const roomUpdated = (room) => { setRoomCode(room.code); setPlayers(room.players); localStorage.setItem('imposter-room-code', room.code); };
+    const roleReceived = ({ role, word: receivedWord }) => { const playerName = name || localStorage.getItem('imposter-player-name'); setRoles((current) => ({ ...current, [playerName]: role })); setWord(receivedWord || ''); setScreen('role'); };
     const gameState = ({ currentPlayerId, question: serverQuestion }) => { if (serverQuestion) setQuestion(serverQuestion); setTurn((current) => { const next = players.findIndex((player) => player.id === currentPlayerId); return next < 0 ? current : next; }); };
     const votingStarted = () => setScreen('voting');
     const resultsReceived = ({ imposterId, word: resultWord, caught, votes: serverVotes }) => {
@@ -89,7 +97,7 @@ function App() {
     const iceReceived = async ({ fromId, candidate }) => { const peer = peersRef.current.get(fromId); if (peer && candidate) await peer.addIceCandidate(candidate).catch(() => {}); };
     socket.on('connect', connected); socket.on('room:update', roomUpdated); socket.on('game:role', roleReceived); socket.on('game:state', gameState); socket.on('game:voting', votingStarted); socket.on('game:results', resultsReceived); socket.on('webrtc:offer', offerReceived); socket.on('webrtc:answer', answerReceived); socket.on('webrtc:ice', iceReceived);
     return () => { socket.off('connect', connected); socket.off('room:update', roomUpdated); socket.off('game:role', roleReceived); socket.off('game:state', gameState); socket.off('game:voting', votingStarted); socket.off('game:results', resultsReceived); socket.off('webrtc:offer', offerReceived); socket.off('webrtc:answer', answerReceived); socket.off('webrtc:ice', iceReceived); };
-  }, [name, players]);
+  }, [name, players, playerToken]);
 
   useEffect(() => {
     if (!micOn || !localStreamRef.current || !myId) return;
@@ -111,7 +119,8 @@ function App() {
     if (!name.trim()) return setNotice('Enter your name first');
     if (join && roomCode.trim().length < 4) return setNotice('Enter a valid 4-digit room code');
     const event = join ? 'room:join' : 'room:create';
-    const payload = join ? { code: roomCode.trim(), name: name.trim() } : { name: name.trim() };
+    const payload = join ? { code: roomCode.trim(), name: name.trim(), token: playerToken } : { name: name.trim(), token: playerToken };
+    localStorage.setItem('imposter-player-name', name.trim());
     socket.emit(event, payload, (response) => { if (!response?.ok) return setNotice(response?.error === 'Room not found' ? 'This room expired. Create a new room and share the new code.' : response?.error || 'Could not enter room'); setScreen('lobby'); });
   }
 
@@ -160,6 +169,7 @@ function App() {
   }
 
   function reset() {
+    localStorage.removeItem('imposter-room-code'); localStorage.removeItem('imposter-player-name');
     setScreen('home'); setRoomCode(''); setPlayers([]); setRound(1); setRoles({}); setVotes({}); setScores({}); setMicOn(false);
   }
 
@@ -175,12 +185,14 @@ function App() {
   const stepIndex = Math.max(0, steps.findIndex((step) => step.id === screen));
   const stepBar = screen !== 'home' && screen !== 'final' ? <div className="step-bar">{steps.map((step, index) => <div className={`step ${index <= stepIndex ? 'done' : ''} ${index === stepIndex ? 'current' : ''}`} key={step.id}><span>{index < stepIndex ? '✓' : index + 1}</span><small>{step.label}</small></div>)}</div> : null;
   const questionCard = question && screen !== 'home' && screen !== 'lobby' && screen !== 'final' ? <div className="question-card global-question"><span>FUNNY QUESTION FOR THIS ROUND</span><strong>{question}</strong></div> : null;
+  const wordCard = word && roles[name] === 'player' && screen !== 'home' && screen !== 'lobby' && screen !== 'final' ? <div className="always-word"><span>YOUR SECRET WORD</span><strong>{word}</strong></div> : null;
 
   return <div className="app-shell">
     <header className="topbar"><div className="brand"><span className="brand-mark"><Sparkles size={17} /></span> imposter <em>who?</em></div>{screen !== 'home' && <button className="quiet-button" onClick={reset}>Leave room</button>}</header>
     {notice && <div className="toast">{notice}</div>}
     {stepBar}
     {questionCard}
+    {wordCard}
     {screen === 'home' && <main className="center-page home-page"><div className="eyebrow">THE FAMILY PARTY GAME</div><h1>Who is hiding<br /><span>in plain sight?</span></h1><p className="lead">Give clever clues, listen closely, and catch the imposter before they catch you.</p><div className="home-cards"><section className="card action-card"><div className="card-icon purple"><Sparkles /></div><h2>Create a room</h2><p>Start a private game and invite your family.</p><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" maxLength={18} /><button className="primary-button" onClick={() => startRoom(false)}>Create room <ArrowRight size={17} /></button></section><section className="card action-card"><div className="card-icon orange"><Users /></div><h2>Join a room</h2><p>Enter the code shared by your family.</p><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" maxLength={18} /><input value={roomCode} onChange={(e) => setRoomCode(e.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="4-digit room code" inputMode="numeric" /><button className="secondary-button" onClick={() => startRoom(true)}>Join room <ArrowRight size={17} /></button></section></div><div className="how"><ShieldCheck size={17} /> No accounts needed · Family-friendly · Play in minutes</div></main>}
     {screen === 'lobby' && <main className="game-layout"><div className="main-column"><div className="eyebrow">ROOM READY</div><h1>Invite your family.</h1><p className="lead">Share the room code, then choose your game settings.</p><div className="room-code"><span>{roomCode}</span><button onClick={copyRoom}>{copied ? 'Copied!' : <><Copy size={16} /> Copy code</>}</button></div><section className="card settings"><div><label>Category</label><select value={category} onChange={(e) => setCategory(e.target.value)}>{Object.keys(WORDS).map((key) => <option key={key}>{key}</option>)}</select></div><div><label>Rounds</label><select value={rounds} onChange={(e) => setRounds(Number(e.target.value))}><option value={1}>1 round</option><option value={3}>3 rounds</option><option value={5}>5 rounds</option></select></div></section><button className="primary-button wide" onClick={beginGame}>Start game <ArrowRight size={17} /></button></div><div className="side-column"><section className="card player-card"><div className="section-heading"><h3><Users size={18} /> Players</h3><span>{players.length} joined</span></div>{players.map((player, index) => <div className="player-line" key={player.name}><div className={`avatar small hue-${index}`}>{player.name[0]}</div><span>{player.name}{player.name === name && <small>you</small>}</span>{player.isHost && <Crown size={15} className="crown" />}</div>)}</section>{callPanel}</div></main>}
     {screen === 'role' && <main className="game-layout"><div className="main-column"><div className="progress"><span>ROUND {round} / {rounds}</span><span>ROLE REVEAL</span></div><div className="role-card"><div className="role-symbol">{roles[name] === 'imposter' ? '◉' : '✦'}</div><div className="eyebrow">YOUR SECRET ROLE</div><h1>{roles[name] === 'imposter' ? 'You are the imposter.' : 'You are a player.'}</h1><p>{roles[name] === 'imposter' ? 'Listen carefully and follow your funny mission.' : 'You know the secret word. Give a clue that helps your family, but not the imposter.'}</p>{roles[name] === 'player' && <div className="secret-word"><span>YOUR WORD</span><strong>{word}</strong></div>}{roles[name] === 'imposter' && <div className="secret-word imposter-word"><span>YOUR FUNNY MISSION</span><strong>{mission}</strong></div>}<button className="primary-button" onClick={() => setScreen('turn')}>I’m ready <ArrowRight size={17} /></button></div></div><div className="side-column">{callPanel}</div></main>}

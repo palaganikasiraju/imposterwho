@@ -21,7 +21,7 @@ app.use((req, res, next) => {
 });
 
 function publicRoom(room) {
-  return { code: room.code, hostId: room.hostId, status: room.status, players: [...room.players.values()].map(({ id, name, isHost }) => ({ id, name, isHost })) };
+  return { code: room.code, hostId: room.hostId, status: room.status, players: [...room.players.values()].filter((player) => !player.disconnected).map(({ id, name, isHost }) => ({ id, name, isHost })) };
 }
 
 function sendRoom(code) {
@@ -30,19 +30,28 @@ function sendRoom(code) {
 }
 
 io.on('connection', (socket) => {
-  socket.on('room:create', ({ name }, done) => {
+  socket.on('room:create', ({ name, token }, done) => {
     const code = String(Math.floor(1000 + Math.random() * 9000));
-    const room = { code, hostId: socket.id, status: 'lobby', players: new Map([[socket.id, { id: socket.id, name: String(name).trim().slice(0, 18), isHost: true }]]) };
+    const room = { code, hostId: socket.id, status: 'lobby', players: new Map([[socket.id, { id: socket.id, token, name: String(name).trim().slice(0, 18), isHost: true }]]) };
     rooms.set(code, room); socket.join(code); socket.data.roomCode = code;
     done?.({ ok: true, room: publicRoom(room) }); sendRoom(code);
   });
 
-  socket.on('room:join', ({ code, name }, done) => {
+  socket.on('room:join', ({ code, name, token }, done) => {
     const room = rooms.get(String(code));
     if (!room) return done?.({ ok: false, error: 'Room not found' });
+    const returning = [...room.players.entries()].find(([, player]) => player.token && player.token === token);
+    if (returning) {
+      const [oldId, oldPlayer] = returning; const player = { ...oldPlayer, id: socket.id, disconnected: false };
+      room.players.delete(oldId); room.players.set(socket.id, player); if (room.hostId === oldId) room.hostId = socket.id;
+      if (room.game) { room.game.players = room.game.players.map((id) => id === oldId ? socket.id : id); if (room.game.imposterId === oldId) room.game.imposterId = socket.id; const nextVotes = new Map(); for (const [voter, target] of room.game.votes || []) nextVotes.set(voter === oldId ? socket.id : voter, target === oldId ? socket.id : target); room.game.votes = nextVotes; }
+      socket.join(room.code); socket.data.roomCode = room.code; done?.({ ok: true, room: publicRoom(room) }); sendRoom(room.code);
+      if (room.game) { io.to(socket.id).emit('game:role', { role: room.game.imposterId === socket.id ? 'imposter' : 'player', word: room.game.imposterId === socket.id ? null : room.game.word }); io.to(socket.id).emit('game:state', { status: 'playing', turn: room.game.turn, currentPlayerId: room.game.players[room.game.turn], question: room.game.question }); }
+      return;
+    }
     if (room.status !== 'lobby') return done?.({ ok: false, error: 'Game already started' });
     if (room.players.size >= 12) return done?.({ ok: false, error: 'Room is full' });
-    room.players.set(socket.id, { id: socket.id, name: String(name).trim().slice(0, 18), isHost: false });
+    room.players.set(socket.id, { id: socket.id, token, name: String(name).trim().slice(0, 18), isHost: false });
     socket.join(room.code); socket.data.roomCode = room.code;
     done?.({ ok: true, room: publicRoom(room) }); sendRoom(room.code);
   });
@@ -80,7 +89,7 @@ io.on('connection', (socket) => {
   socket.on('webrtc:answer', ({ targetId, answer }) => io.to(targetId).emit('webrtc:answer', { fromId: socket.id, answer }));
   socket.on('webrtc:ice', ({ targetId, candidate }) => io.to(targetId).emit('webrtc:ice', { fromId: socket.id, candidate }));
 
-  socket.on('disconnect', () => { const code = socket.data.roomCode; const room = rooms.get(code); if (!room) return; room.players.delete(socket.id); if (room.hostId === socket.id) room.hostId = room.players.keys().next().value; if (!room.players.size) rooms.delete(code); else sendRoom(code); });
+  socket.on('disconnect', () => { const code = socket.data.roomCode; const room = rooms.get(code); if (!room) return; const player = room.players.get(socket.id); if (player) player.disconnected = true; sendRoom(code); });
 });
 
 const port = process.env.PORT || 3001;

@@ -96,7 +96,7 @@ function App() {
     if (join && roomCode.trim().length < 4) return setNotice('Enter a valid 4-digit room code');
     const event = join ? 'room:join' : 'room:create';
     const payload = join ? { code: roomCode.trim(), name: name.trim() } : { name: name.trim() };
-    socket.emit(event, payload, (response) => { if (!response?.ok) return setNotice(response?.error || 'Could not enter room'); setScreen('lobby'); });
+    socket.emit(event, payload, (response) => { if (!response?.ok) return setNotice(response?.error === 'Room not found' ? 'This room expired. Create a new room and share the new code.' : response?.error || 'Could not enter room'); setScreen('lobby'); });
   }
 
   function copyRoom() {

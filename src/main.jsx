@@ -73,7 +73,7 @@ function App() {
     const connected = () => { setMyId(socket.id); const savedName = localStorage.getItem('imposter-player-name'); const savedRoom = localStorage.getItem('imposter-room-code'); if (savedName && savedRoom) socket.emit('room:join', { code: savedRoom, name: savedName, token: playerToken }, (response) => { if (response?.ok) setScreen('lobby'); }); };
     const roomUpdated = (room) => { setRoomCode(room.code); setPlayers(room.players); localStorage.setItem('imposter-room-code', room.code); };
     const roleReceived = ({ role, word: receivedWord }) => { const playerName = name || localStorage.getItem('imposter-player-name'); setRoles((current) => ({ ...current, [playerName]: role })); setWord(receivedWord || ''); setScreen('role'); };
-    const gameState = ({ currentPlayerId, turn: serverTurn, question: serverQuestion }) => { if (serverQuestion) setQuestion(serverQuestion); setTurn(typeof serverTurn === 'number' ? serverTurn : (current) => { const next = players.findIndex((player) => player.id === currentPlayerId); return next < 0 ? current : next; }); };
+    const gameState = ({ currentPlayerId, question: serverQuestion }) => { if (serverQuestion) setQuestion(serverQuestion); setTurn((current) => { const next = players.findIndex((player) => player.id === currentPlayerId); return next < 0 ? current : next; }); };
     const votingStarted = () => setScreen('voting');
     const resultsReceived = ({ imposterId, word: resultWord, caught, votes: serverVotes }) => {
       const imposterPlayer = players.find((player) => player.id === imposterId);

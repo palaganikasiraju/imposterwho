@@ -60,10 +60,11 @@ io.on('connection', (socket) => {
     const room = rooms.get(roomCode);
     if (!room || room.hostId !== socket.id || room.players.size < 2) return done?.({ ok: false, error: `At least 2 players are needed. Live players: ${room?.players.size || 0}` });
     room.status = 'playing'; room.game = { ...settings, turn: 0, players: [...room.players.values()].map((p) => p.id) };
-    const ids = room.game.players; const imposterId = ids[Math.floor(Math.random() * ids.length)];
-    room.game.imposterId = imposterId; room.game.word = settings.word; room.game.question = settings.question; room.game.votes = new Map(); room.game.turn = Math.floor(Math.random() * ids.length);
+    const ids = room.game.players; const imposterId = ids[Math.floor(Math.random() * ids.length)]; const startIndex = Math.floor(Math.random() * ids.length);
+    room.game.players = ids.slice(startIndex).concat(ids.slice(0, startIndex)); room.game.turn = 0;
+    room.game.imposterId = imposterId; room.game.word = settings.word; room.game.question = settings.question; room.game.votes = new Map();
     ids.forEach((id) => io.to(id).emit('game:role', { role: id === imposterId ? 'imposter' : 'player', word: id === imposterId ? null : settings.word }));
-    io.to(roomCode).emit('game:state', { status: 'playing', turn: room.game.turn, currentPlayerId: ids[room.game.turn], question: room.game.question }); sendRoom(roomCode); done?.({ ok: true });
+    io.to(roomCode).emit('game:state', { status: 'playing', turn: 0, currentPlayerId: room.game.players[0], question: room.game.question }); sendRoom(roomCode); done?.({ ok: true });
   });
 
   socket.on('game:next', ({ roomCode }, done) => {
@@ -74,7 +75,7 @@ io.on('connection', (socket) => {
     done?.({ ok: true });
   });
 
-  socket.on('vote:submit', ({ roomCode, targetId }) => {
+  socket.on('vote:submit', ({ roomCode, targetId }, done) => {
     const room = rooms.get(roomCode); if (!room?.game) return;
     room.game.votes.set(socket.id, targetId);
     io.to(roomCode).emit('vote:update', { voterId: socket.id, targetId });
@@ -83,6 +84,7 @@ io.on('connection', (socket) => {
       const topTarget = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0];
       io.to(roomCode).emit('game:results', { imposterId: room.game.imposterId, word: room.game.word, caught: topTarget === room.game.imposterId, votes: Object.fromEntries(room.game.votes) });
     }
+    done?.({ ok: true });
   });
 
   socket.on('webrtc:offer', ({ targetId, offer }) => io.to(targetId).emit('webrtc:offer', { fromId: socket.id, offer }));

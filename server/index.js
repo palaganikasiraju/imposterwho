@@ -14,6 +14,11 @@ const rooms = new Map();
 app.use(cors());
 app.use(express.json());
 app.get('/health', (_req, res) => res.json({ ok: true, rooms: rooms.size }));
+app.use(express.static(path.join(__dirname, '..', 'dist')));
+app.use((req, res, next) => {
+  if (req.method === 'GET' && req.accepts('html')) return res.sendFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  next();
+});
 
 function publicRoom(room) {
   return { code: room.code, hostId: room.hostId, status: room.status, players: [...room.players.values()].map(({ id, name, isHost }) => ({ id, name, isHost })) };

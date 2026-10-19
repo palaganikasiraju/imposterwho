@@ -49,7 +49,7 @@ io.on('connection', (socket) => {
 
   socket.on('game:start', ({ roomCode, settings }, done) => {
     const room = rooms.get(roomCode);
-    if (!room || room.hostId !== socket.id || room.players.size < 3) return done?.({ ok: false, error: 'At least 3 players are needed' });
+    if (!room || room.hostId !== socket.id || room.players.size < 2) return done?.({ ok: false, error: `At least 2 players are needed. Live players: ${room?.players.size || 0}` });
     room.status = 'playing'; room.game = { ...settings, turn: 0, players: [...room.players.values()].map((p) => p.id) };
     const ids = room.game.players; const imposterId = ids[Math.floor(Math.random() * ids.length)];
     room.game.imposterId = imposterId; room.game.word = settings.word; room.game.question = settings.question; room.game.votes = new Map();

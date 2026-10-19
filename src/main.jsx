@@ -109,7 +109,7 @@ function App() {
     const chosenWord = WORDS[category][Math.floor(Math.random() * WORDS[category].length)];
     setQuestion(QUESTIONS[Math.floor(Math.random() * QUESTIONS.length)]);
     setMission(IMPOSTER_MISSIONS[Math.floor(Math.random() * IMPOSTER_MISSIONS.length)]);
-    if (players.length < 3) return setNotice('Add at least 3 family members before starting');
+    if (players.length < 2) return setNotice('Add at least 2 family members before starting');
     socket.emit('game:start', { roomCode, settings: { category, rounds, word: chosenWord, question } }, (response) => { if (!response?.ok) setNotice(response?.error || 'Only the host can start'); });
   }
 

@@ -50,7 +50,6 @@ io.on('connection', (socket) => {
       return;
     }
     if (room.status !== 'lobby') return done?.({ ok: false, error: 'Game already started' });
-    if (room.players.size >= 12) return done?.({ ok: false, error: 'Room is full' });
     room.players.set(socket.id, { id: socket.id, token, name: String(name).trim().slice(0, 18), isHost: false });
     socket.join(room.code); socket.data.roomCode = room.code;
     done?.({ ok: true, room: publicRoom(room) }); sendRoom(room.code);

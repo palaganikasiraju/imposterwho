@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { io } from 'socket.io-client';
 import { Headphones, Mic, MicOff, Copy, Users, Sparkles, ArrowRight, RotateCcw, Crown, ShieldCheck, Volume2 } from 'lucide-react';
@@ -41,6 +41,9 @@ function App() {
   const [scores, setScores] = useState({});
   const [notice, setNotice] = useState('');
   const [myId, setMyId] = useState('');
+  const localStreamRef = useRef(null);
+  const peersRef = useRef(new Map());
+  const [remoteStreams, setRemoteStreams] = useState({});
 
   const currentPlayer = players[turn];
   const isMyTurn = currentPlayer?.name === name;
@@ -68,8 +71,22 @@ function App() {
       setWord(resultWord); setVotes(Object.fromEntries(Object.entries(serverVotes || {}).map(([voterId, targetId]) => [players.find((p) => p.id === voterId)?.name || voterId, players.find((p) => p.id === targetId)?.name || targetId]))); setScreen('results');
       setNotice(caught ? 'The family caught the imposter!' : 'The imposter escaped!');
     };
-    socket.on('connect', connected); socket.on('room:update', roomUpdated); socket.on('game:role', roleReceived); socket.on('game:state', gameState); socket.on('game:voting', votingStarted); socket.on('game:results', resultsReceived);
-    return () => { socket.off('connect', connected); socket.off('room:update', roomUpdated); socket.off('game:role', roleReceived); socket.off('game:state', gameState); socket.off('game:voting', votingStarted); socket.off('game:results', resultsReceived); };
+    const createPeer = (peerId, initiator) => {
+      if (peersRef.current.has(peerId)) return peersRef.current.get(peerId);
+      const peer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      localStreamRef.current?.getTracks().forEach((track) => peer.addTrack(track, localStreamRef.current));
+      peer.onicecandidate = ({ candidate }) => { if (candidate) socket.emit('webrtc:ice', { targetId: peerId, candidate }); };
+      peer.ontrack = ({ streams }) => { if (streams[0]) setRemoteStreams((current) => ({ ...current, [peerId]: streams[0] })); };
+      peer.onconnectionstatechange = () => { if (['failed', 'closed', 'disconnected'].includes(peer.connectionState)) { peer.close(); peersRef.current.delete(peerId); setRemoteStreams((current) => { const next = { ...current }; delete next[peerId]; return next; }); } };
+      peersRef.current.set(peerId, peer);
+      if (initiator) peer.createOffer().then((offer) => peer.setLocalDescription(offer)).then(() => socket.emit('webrtc:offer', { targetId: peerId, offer: peer.localDescription }));
+      return peer;
+    };
+    const offerReceived = async ({ fromId, offer }) => { const peer = createPeer(fromId, false); await peer.setRemoteDescription(offer); const answer = await peer.createAnswer(); await peer.setLocalDescription(answer); socket.emit('webrtc:answer', { targetId: fromId, answer }); };
+    const answerReceived = async ({ fromId, answer }) => { const peer = peersRef.current.get(fromId); if (peer) await peer.setRemoteDescription(answer); };
+    const iceReceived = async ({ fromId, candidate }) => { const peer = peersRef.current.get(fromId); if (peer && candidate) await peer.addIceCandidate(candidate).catch(() => {}); };
+    socket.on('connect', connected); socket.on('room:update', roomUpdated); socket.on('game:role', roleReceived); socket.on('game:state', gameState); socket.on('game:voting', votingStarted); socket.on('game:results', resultsReceived); socket.on('webrtc:offer', offerReceived); socket.on('webrtc:answer', answerReceived); socket.on('webrtc:ice', iceReceived);
+    return () => { socket.off('connect', connected); socket.off('room:update', roomUpdated); socket.off('game:role', roleReceived); socket.off('game:state', gameState); socket.off('game:voting', votingStarted); socket.off('game:results', resultsReceived); socket.off('webrtc:offer', offerReceived); socket.off('webrtc:answer', answerReceived); socket.off('webrtc:ice', iceReceived); };
   }, [name, players]);
 
   function startRoom(join = false) {
@@ -96,12 +113,24 @@ function App() {
   async function toggleMic() {
     if (!micOn && navigator.mediaDevices?.getUserMedia) {
       try {
-        await navigator.mediaDevices.getUserMedia({ audio: true });
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+        localStreamRef.current = stream;
         setMicOn(true);
+        players.filter((player) => player.id && player.id !== socket.id).forEach((player) => {
+          const initiator = socket.id < player.id;
+          if (initiator) {
+            const peer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+            stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+            peer.onicecandidate = ({ candidate }) => { if (candidate) socket.emit('webrtc:ice', { targetId: player.id, candidate }); };
+            peer.ontrack = ({ streams }) => { if (streams[0]) setRemoteStreams((current) => ({ ...current, [player.id]: streams[0] })); };
+            peersRef.current.set(player.id, peer);
+            peer.createOffer().then((offer) => peer.setLocalDescription(offer)).then(() => socket.emit('webrtc:offer', { targetId: player.id, offer: peer.localDescription }));
+          }
+        });
       } catch {
         setNotice('Microphone permission was not granted');
       }
-    } else setMicOn(false);
+    } else { localStreamRef.current?.getTracks().forEach((track) => track.stop()); setMicOn(false); }
   }
 
   function finishTurn() {
@@ -129,7 +158,8 @@ function App() {
   const callPanel = <aside className="call-panel">
     <div className="call-title"><span className="live-dot" /> Family call <span className="call-count"><Users size={14} /> {players.length}</span></div>
     <div className="avatar-row">{players.map((player, index) => <div className="avatar-wrap" key={player.name}><div className={`avatar hue-${index}`}>{player.name[0]}</div><span>{player.name}</span></div>)}</div>
-    <div className="call-actions"><button className={micOn ? 'icon-button active' : 'icon-button'} onClick={toggleMic}>{micOn ? <Mic size={17} /> : <MicOff size={17} />}</button><span>{micOn ? 'Mic on' : 'Mic off'}</span><button className="icon-button"><Volume2 size={17} /></button></div>
+    <div className="call-actions"><button className={micOn ? 'icon-button active' : 'icon-button'} onClick={toggleMic}>{micOn ? <Mic size={17} /> : <MicOff size={17} />}</button><span>{micOn ? 'Mic on' : 'Join audio'}</span><button className="icon-button"><Volume2 size={17} /></button></div>
+    <div className="remote-audio">{Object.entries(remoteStreams).map(([peerId, stream]) => <audio key={peerId} autoPlay ref={(element) => { if (element) element.srcObject = stream; }} />)}</div>
     <p className="call-note"><Headphones size={14} /> Talk freely while the current player gives a clue.</p>
   </aside>;
 
